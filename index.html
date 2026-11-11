@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hackenbush 竹スタークゲーム</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-emerald-950 text-gray-100 min-h-screen">
+<div class="max-w-2xl mx-auto p-4 py-8">
+  <h1 class="text-2xl font-bold text-center text-emerald-400 mb-1">🎋 Hackenbush 竹ゲーム</h1>
+  <p class="text-center text-gray-400 text-sm mb-6">辺をクリックして切り取れ — 動けなくなった方が負け</p>
+
+  <!-- ゲーム状態 -->
+  <div class="flex justify-between items-center bg-emerald-900 rounded-lg p-3 mb-4 text-sm border border-emerald-700">
+    <span>手番: <span id="currentPlayer" class="font-bold text-yellow-400">プレイヤー1</span></span>
+    <span id="analysisText" class="text-emerald-300 text-xs"></span>
+    <span>AIモード: <button id="aiToggle" aria-label="AIモードを切り替え" class="font-bold text-xs px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 transition-colors">OFF</button></span>
+  </div>
+
+  <!-- SVGボード -->
+  <div class="bg-emerald-900 rounded-xl border border-emerald-700 mb-4 overflow-hidden" style="touch-action:none;">
+    <svg id="gameBoard" viewBox="0 0 500 320" class="w-full" style="max-height:340px;">
+      <!-- 地面 -->
+      <line x1="0" y1="295" x2="500" y2="295" stroke="#6ee7b7" stroke-width="3"/>
+      <text x="250" y="315" text-anchor="middle" fill="#6ee7b7" font-size="12">地面（根）</text>
+    </svg>
+  </div>
+
+  <!-- 操作パネル -->
+  <div class="flex gap-2 mb-4">
+    <button id="newGameBtn"
+      aria-label="新しいゲームを開始"
+      class="flex-1 bg-emerald-700 hover:bg-emerald-600 py-2 rounded-lg text-sm font-semibold transition-colors">
+      🔄 新しいゲーム
+    </button>
+    <button id="analysisBtn"
+      aria-label="局面分析を表示"
+      class="flex-1 bg-teal-700 hover:bg-teal-600 py-2 rounded-lg text-sm font-semibold transition-colors">
+      📊 局面分析
+    </button>
+  </div>
+
+  <!-- 説明 -->
+  <div id="messageBox" class="bg-emerald-900 border border-emerald-700 rounded-lg p-3 mb-4 text-sm text-emerald-200 text-center">
+    辺をクリックすると、その辺と「根から切り離される辺」が消えます
+  </div>
+
+  <!-- 局面分析 -->
+  <div id="analysisPanel" class="hidden bg-emerald-900 border border-emerald-700 rounded-xl p-4 mb-4">
+    <div class="text-xs text-emerald-400 font-semibold mb-3 uppercase tracking-widest">局面分析（Nim値）</div>
+    <div id="nimValues" class="space-y-2 text-sm mb-3"></div>
+    <div class="bg-emerald-800 rounded-lg p-3 text-sm">
+      <span class="text-emerald-300 font-bold">XOR合計（Grundy値）: </span>
+      <span id="totalNim" class="text-white font-bold text-lg"></span>
+      <div id="nimAdvice" class="mt-1 text-emerald-200 text-xs"></div>
+    </div>
+  </div>
+
+  <!-- 勝敗モーダル -->
+  <div id="winModal" class="hidden fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+    <div class="bg-emerald-900 border-2 border-emerald-500 rounded-2xl p-8 text-center max-w-xs mx-4">
+      <div id="winEmoji" class="text-6xl mb-3"></div>
+      <div id="winTitle" class="text-2xl font-bold text-emerald-300 mb-2"></div>
+      <div id="winDetail" class="text-gray-300 mb-6 text-sm"></div>
+      <button id="winNewGame"
+        aria-label="もう一度プレイ"
+        class="bg-emerald-600 hover:bg-emerald-500 px-8 py-3 rounded-xl font-bold transition-colors">
+        もう一度
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// ゲーム状態
+let stalks = [];      // [{x, edges:[{id,y1,y2,cut}]}]
+let currentPlayer = 1;
+let aiMode = false;
+let moveCount = 0;
+
+const GROUND_Y = 295;
+const STALK_COLS = [80, 160, 240, 320, 400];
+const EDGE_HEIGHT = 45;
+const COLORS_P1 = '#6ee7b7';
+const COLORS_CUT = '#374151';
+
+function initGame() {
+  // 3〜5本の竹をランダム生成
+  const numStalks = Math.floor(Math.random() * 3) + 3;
+  stalks = [];
+  for (let i = 0; i < numStalks; i++) {
+    const edgeCount = Math.floor(Math.random() * 4) + 2; // 2〜5本の辺
+    const edges = [];
+    for (let j = 0; j < edgeCount; j++) {
+      edges.push({ id: `s${i}e${j}`, y1: GROUND_Y - (j + 1) * EDGE_HEIGHT, y2: GROUND_Y - j * EDGE_HEIGHT, cut: false });
+    }
+    stalks.push({ x: STALK_COLS[i], edges });
+  }
+  currentPlayer = 1;
+  moveCount = 0;
+  document.getElementById('currentPlayer').textContent = 'プレイヤー1';
+  document.getElementById('currentPlayer').className = 'font-bold text-yellow-400';
+  document.getElementById('messageBox').textContent = '辺をクリックすると、その辺と「根から切り離される辺」が消えます';
+  document.getElementById('analysisPanel').classList.add('hidden');
+  document.getElementById('winModal').classList.add('hidden');
+  renderBoard();
+  updateAnalysis();
+}
+
+function nimValueOfStalk(stalk) {
+  // 竹スタックのNim値 = 切れていない辺の連続した一番下からの高さ
+  let count = 0;
+  for (let j = 0; j < stalk.edges.length; j++) {
+    if (stalk.edges[j].cut) break;
+    count++;
+  }
+  return count;
+}
+
+function totalNimXor() {
+  return stalks.reduce((xor, s) => xor ^ nimValueOfStalk(s), 0);
+}
+
+function getActiveEdges(stalkIdx) {
+  const stalk = stalks[stalkIdx];
+  const active = [];
+  for (let j = 0; j < stalk.edges.length; j++) {
+    if (stalk.edges[j].cut) break;
+    active.push(j);
+  }
+  return active;
+}
+
+function cutEdge(stalkIdx, edgeIdx) {
+  const stalk = stalks[stalkIdx];
+  // この辺以上（根から離れた辺）を全て切る
+  for (let j = edgeIdx; j < stalk.edges.length; j++) {
+    stalk.edges[j].cut = true;
+  }
+  moveCount++;
+  checkWin();
+  if (!document.getElementById('winModal').classList.contains('hidden')) return;
+  currentPlayer = currentPlayer === 1 ? 2 : 1;
+  document.getElementById('currentPlayer').textContent = `プレイヤー${currentPlayer}`;
+  document.getElementById('currentPlayer').className = `font-bold ${currentPlayer === 1 ? 'text-yellow-400' : 'text-cyan-400'}`;
+  renderBoard();
+  updateAnalysis();
+
+  if (aiMode && currentPlayer === 2) {
+    setTimeout(aiMove, 600);
+  }
+}
+
+function checkWin() {
+  // 全スタックが空なら、次の手番のプレイヤーが負け（今動いたプレイヤーが勝ち）
+  const anyMoves = stalks.some(s => s.edges.some(e => !e.cut));
+  if (!anyMoves) {
+    const winner = currentPlayer;
+    const loser = winner === 1 ? 2 : 1;
+    showWin(winner, loser);
+  }
+}
+
+function showWin(winner, loser) {
+  document.getElementById('winModal').classList.remove('hidden');
+  document.getElementById('winEmoji').textContent = winner === 1 ? '🏆' : (aiMode ? '🤖' : '🏆');
+  document.getElementById('winTitle').textContent = `プレイヤー${winner} の勝利！`;
+  document.getElementById('winDetail').textContent = `プレイヤー${loser}は動ける辺がなくなりました。${moveCount}手で決着。`;
+}
+
+function aiMove() {
+  // Nim理論に基づく最適手選択
+  // 現在のXOR値が0でない場合、XORを0にする手を選ぶ
+  const xorVal = totalNimXor();
+  if (xorVal === 0) {
+    // 負け局面 → 任意の手
+    randomMove();
+    return;
+  }
+  // 各スタックについて、切った後にXORが0になる手を探す
+  for (let si = 0; si < stalks.length; si++) {
+    const nimS = nimValueOfStalk(stalks[si]);
+    const targetNim = nimS ^ xorVal;
+    if (targetNim < nimS) {
+      // このスタックをtargetNim本にする → (nimS - targetNim)本の辺を切る
+      const edgeIdx = targetNim; // targetNim番目の辺を切る（0-indexed）
+      const activeEdges = getActiveEdges(si);
+      if (edgeIdx < activeEdges.length) {
+        cutEdge(si, activeEdges[edgeIdx]);
+        document.getElementById('messageBox').textContent = `AIがスタック${si + 1}の辺を切りました（Nim値: ${nimS} → ${targetNim}）`;
+        return;
+      }
+    }
+  }
+  randomMove();
+}
+
+function randomMove() {
+  const available = [];
+  stalks.forEach((s, si) => {
+    getActiveEdges(si).forEach(ei => available.push({ si, ei }));
+  });
+  if (available.length === 0) return;
+  const pick = available[Math.floor(Math.random() * available.length)];
+  cutEdge(pick.si, pick.ei);
+}
+
+function renderBoard() {
+  const svg = document.getElementById('gameBoard');
+  // 既存辺を削除（地面は残す）
+  svg.querySelectorAll('.stalk-edge, .stalk-label').forEach(el => el.remove());
+
+  stalks.forEach((stalk, si) => {
+    const activeCount = nimValueOfStalk(stalk);
+    stalk.edges.forEach((edge, ei) => {
+      if (edge.cut) return;
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', stalk.x);
+      line.setAttribute('y1', edge.y1);
+      line.setAttribute('x2', stalk.x);
+      line.setAttribute('y2', edge.y2);
+      line.setAttribute('stroke', COLORS_P1);
+      line.setAttribute('stroke-width', '8');
+      line.setAttribute('stroke-linecap', 'round');
+      line.setAttribute('class', 'stalk-edge cursor-pointer transition-all');
+      line.style.opacity = edge.cut ? '0.2' : '1';
+
+      // ホバー効果
+      line.addEventListener('mouseenter', () => {
+        if (!edge.cut) line.setAttribute('stroke', '#fbbf24');
+      });
+      line.addEventListener('mouseleave', () => {
+        if (!edge.cut) line.setAttribute('stroke', COLORS_P1);
+      });
+      line.addEventListener('click', () => {
+        if (edge.cut) return;
+        if (aiMode && currentPlayer === 2) return;
+        cutEdge(si, ei);
+      });
+      line.setAttribute('aria-label', `スタック${si + 1}の辺${ei + 1}を切る`);
+      svg.appendChild(line);
+
+      // 辺番号
+      const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      txt.setAttribute('x', stalk.x + 12);
+      txt.setAttribute('y', (edge.y1 + edge.y2) / 2 + 4);
+      txt.setAttribute('fill', '#a7f3d0');
+      txt.setAttribute('font-size', '11');
+      txt.setAttribute('class', 'stalk-label select-none pointer-events-none');
+      txt.textContent = ei + 1;
+      svg.appendChild(txt);
+    });
+
+    // スタック番号
+    const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    lbl.setAttribute('x', stalk.x);
+    lbl.setAttribute('y', GROUND_Y + 20);
+    lbl.setAttribute('text-anchor', 'middle');
+    lbl.setAttribute('fill', '#6ee7b7');
+    lbl.setAttribute('font-size', '12');
+    lbl.setAttribute('class', 'stalk-label select-none');
+    lbl.textContent = `竹${si + 1}(${activeCount})`;
+    svg.appendChild(lbl);
+  });
+}
+
+function updateAnalysis() {
+  const nimValsEl = document.getElementById('nimValues');
+  nimValsEl.innerHTML = '';
+  stalks.forEach((s, si) => {
+    const nim = nimValueOfStalk(s);
+    const div = document.createElement('div');
+    div.className = 'flex items-center gap-2';
+    div.innerHTML = `<span class="text-emerald-300 w-16 shrink-0">竹${si + 1}</span><div class="flex-1 bg-emerald-800 rounded-full h-4 overflow-hidden"><div class="h-full bg-emerald-400 transition-all" style="width:${Math.min(nim * 20, 100)}%"></div></div><span class="text-white font-mono font-bold w-8 text-right">${nim}</span>`;
+    nimValsEl.appendChild(div);
+  });
+  const xorTotal = totalNimXor();
+  document.getElementById('totalNim').textContent = xorTotal;
+  if (xorTotal === 0) {
+    document.getElementById('nimAdvice').textContent = '後手有利（次に動くプレイヤーが負け局面）';
+    document.getElementById('analysisText').textContent = '後手有利';
+  } else {
+    document.getElementById('nimAdvice').textContent = '先手有利（最適手を打てば現在の手番が勝てる）';
+    document.getElementById('analysisText').textContent = '先手有利';
+  }
+}
+
+document.getElementById('newGameBtn').addEventListener('click', initGame);
+document.getElementById('winNewGame').addEventListener('click', initGame);
+document.getElementById('analysisBtn').addEventListener('click', () => {
+  const p = document.getElementById('analysisPanel');
+  p.classList.toggle('hidden');
+  updateAnalysis();
+});
+document.getElementById('aiToggle').addEventListener('click', () => {
+  aiMode = !aiMode;
+  const btn = document.getElementById('aiToggle');
+  btn.textContent = aiMode ? 'ON' : 'OFF';
+  btn.className = `font-bold text-xs px-2 py-1 rounded transition-colors ${aiMode ? 'bg-cyan-600 hover:bg-cyan-500' : 'bg-emerald-700 hover:bg-emerald-600'}`;
+  if (aiMode && currentPlayer === 2) setTimeout(aiMove, 600);
+});
+
+initGame();
+</script>
+</body>
+</html>
